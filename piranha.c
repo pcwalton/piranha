@@ -32,11 +32,16 @@ int compare_addr_and_map(const void *addr_p, const void *map_p)
     return *addr >= map->start && *addr < map->end;
 }
 
-struct map *find_map_for_addr(Ustr *maps, uint32_t addr)
+void print_addr(Ustr *maps, uint32_t addr)
 {
-    return (struct map *)bsearch(&addr, maps,
+    struct map *map = (struct map *)bsearch(&addr, maps,
         ustr_len(maps) / sizeof(struct map), sizeof(struct map),
         compare_addr_and_map);
+
+    if (!map)
+        printf("\"%08x\"", addr);
+    else
+        printf("\"%s+%08x\"", ustr_cstr(map->name), addr); 
 }
 
 bool guess_lr_legitimacy(pid_t pid, uint32_t maybe_lr, uint32_t *real_lr)
@@ -133,7 +138,8 @@ bool unwind(pid_t pid, Ustr *maps)
         return false;
     }
 
-    printf("[\"%08lx\"", regs.ARM_pc - 8);
+    printf("[ ");
+    print_addr(maps, regs.ARM_pc - 8);
 
     uint32_t lr = regs.ARM_lr & 0xfffffffe, sp = regs.ARM_sp;
 
@@ -142,7 +148,8 @@ bool unwind(pid_t pid, Ustr *maps)
 #endif
 
     while (lr) {
-        printf(",\"%08x\"", lr);
+        printf(", ");
+        print_addr(maps, lr);
 
         uint32_t maybe_lr;
         do {
