@@ -134,7 +134,7 @@ bool unwind(pid_t pid, Ustr *maps)
 
     int err = ptrace(PTRACE_GETREGS, pid, NULL, &regs);
     if (err) {
-        perror("Couldn't read registers: ");
+        perror("Couldn't read registers");
         return false;
     }
 
@@ -187,8 +187,10 @@ bool read_maps(pid_t pid, Ustr **maps)
     Ustr *path = ustr_dup_fmt("/proc/%d/maps", pid);
     FILE *f = fopen(ustr_cstr(path), "r");
     ustr_sc_free(&path);
-    if (!f)
+    if (!f) {
+        perror("Failed to open /proc/x/maps");
         return false;
+    }
 
     *maps = ustr_dup_empty();
     while (!feof(f)) {
@@ -251,7 +253,7 @@ int main(int argc, char **argv)
     pid_t pid = strtol(argv[1], NULL, 0);
 
     if (ptrace(PTRACE_ATTACH, pid, NULL, NULL)) {
-        perror("Failed to attach: ");
+        perror("Failed to attach");
         return 1;
     }
 
@@ -274,7 +276,7 @@ int main(int argc, char **argv)
 out:
     if (ptrace(PTRACE_DETACH, pid, NULL, NULL)) {
         ok = false;
-        perror("Failed to detach: ");
+        perror("Failed to detach");
     }
 
     return !ok;
