@@ -17,31 +17,35 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include "ustr/ustr.h"
+#include "bstrlib.h"
 
 struct map {
     uint32_t start;
     uint32_t end;
-    Ustr *name;
+    bstring name;
 };
 
 int compare_addr_and_map(const void *addr_p, const void *map_p)
 {
     const uint32_t *addr = addr_p;
     const struct map *map = map_p;
-    return *addr >= map->start && *addr < map->end;
+    if (*addr < map->start)
+        return -1;
+    if (*addr >= map->end)
+        return 1;
+    return 0;
 }
 
-void print_addr(Ustr *maps, uint32_t addr)
+void print_addr(bstring maps, uint32_t addr)
 {
-    struct map *map = (struct map *)bsearch(&addr, maps,
-        ustr_len(maps) / sizeof(struct map), sizeof(struct map),
+    struct map *map = (struct map *)bsearch(&addr, maps->data,
+        maps->slen / sizeof(struct map), sizeof(struct map),
         compare_addr_and_map);
 
     if (!map)
         printf("\"%08x\"", addr);
     else
-        printf("\"%s+%08x\"", ustr_cstr(map->name), addr); 
+        printf("\"%s+%08x\"", map->name->data, addr - map->start); 
 }
 
 bool guess_lr_legitimacy(pid_t pid, uint32_t maybe_lr, uint32_t *real_lr)
@@ -125,11 +129,9 @@ bool guess_lr_legitimacy(pid_t pid, uint32_t maybe_lr, uint32_t *real_lr)
     return false;
 }
 
-bool unwind(pid_t pid, Ustr *maps)
+bool unwind(pid_t pid, bstring maps)
 {
     struct pt_regs regs;
-    bool comma = false;
-
     memset(&regs, '\0', sizeof(regs));
 
     int err = ptrace(PTRACE_GETREGS, pid, NULL, &regs);
@@ -165,7 +167,7 @@ bool unwind(pid_t pid, Ustr *maps)
         } while (!guess_lr_legitimacy(pid, maybe_lr, &lr));
     }
 
-    printf("]\n");
+    printf(" ]\n");
     return true;
 }
 
@@ -180,41 +182,36 @@ bool wait_for_process_to_stop(pid_t pid)
     return true;
 }
 
-bool read_maps(pid_t pid, Ustr **maps)
+bool read_maps(pid_t pid, bstring *maps)
 {
     int ok = true;
 
-    Ustr *path = ustr_dup_fmt("/proc/%d/maps", pid);
-    FILE *f = fopen(ustr_cstr(path), "r");
-    ustr_sc_free(&path);
+    bstring path = bformat("/proc/%d/maps", pid);
+    FILE *f = fopen((char *)path->data, "r");
+    bdestroy(path);
     if (!f) {
         perror("Failed to open /proc/x/maps");
         return false;
     }
 
-    *maps = ustr_dup_empty();
+    *maps = bfromcstr("");
     while (!feof(f)) {
-        Ustr *line = ustr_dup_empty();
-        if (!ustr_io_getline(&line, f)) {
-            ustr_free(line);
-            ok = false;
-            goto out;
-        }
+        bstring line = bgets((bNgetc)fgetc, f, '\n');
+        if (!line)
+            break;
 
         struct map map;
-        map.name = ustr_dup_undef(256);
-        int field_count = sscanf(ustr_cstr(line),
-            "%x-%x %*s %*x %*s %*u %256s", &map.start, &map.end,
-            ustr_wstr(map.name));
-        ustr_free(line);
+        char name[256];
+        int field_count = sscanf((char *)line->data,
+            "%x-%x %*s %*x %*s %*u %255s", &map.start, &map.end, name);
+        bdestroy(line);
 
-        if (!field_count) {
-            ustr_free(map.name);
+        if (!field_count)
             break;
-        }
 
-        if (!ustr_add_buf(maps, &map, sizeof(map))) {
-            ustr_free(map.name);
+        map.name = bfromcstr(name);
+        if (bcatblk(*maps, &map, sizeof(map)) != BSTR_OK) {
+            bdestroy(map.name);
             break;
         }
     }
@@ -224,21 +221,21 @@ out:
     return ok;
 }
 
-void print_maps(Ustr *maps)
+void print_maps(bstring maps)
 {
     bool comma = false;
 
     printf("[");
 
-    for (int i = 0; i < ustr_len(maps) / sizeof(struct map); i++) {
-        struct map *map = &((struct map *)ustr_cstr(maps))[i];
-        printf("%s\n\t{ \"start\": \"%08x\", \"end\": \"%08x\", "
+    for (int i = 0; i < maps->slen / sizeof(struct map); i++) {
+        struct map *map = &((struct map *)maps->data)[i];
+        printf("%s\n\t\t{ \"start\": \"%08x\", \"end\": \"%08x\", "
                "\"name\": \"%s\" }",
-               comma ? "" : ",", map->start, map->end, ustr_cstr(map->name));
+               comma ? "" : ",", map->start, map->end, map->name->data);
         comma = true;
     }
 
-    printf("\n]");
+    printf("\n\t]");
 }
 
 int main(int argc, char **argv)
@@ -262,7 +259,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    Ustr *maps;
+    bstring maps;
     if (!(ok = read_maps(pid, &maps)))
         goto out;
 
