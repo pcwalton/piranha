@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include "bstrlib.h"
 
+// The length of Bionic's __thread_entry routine. This is obviously a gross
+// hack, of which I am ashamed.
 #define THREAD_ENTRY_LENGTH     0x3c
 
 struct map {
@@ -262,8 +264,9 @@ void print_maps(bstring maps)
     for (int i = 0; i < maps->slen / sizeof(struct map); i++) {
         struct map *map = &((struct map *)maps->data)[i];
         printf("%s\n\t\t{ \"start\": \"%08x\", \"end\": \"%08x\", "
-               "\"name\": \"%s\" }",
-               comma ? "" : ",", map->start, map->end, map->name->data);
+               "\"offset\": \"%08x\", \"name\": \"%s\" }",
+               comma ? "," : "", map->start, map->end, map->offset,
+               map->name->data);
         comma = true;
     }
 
