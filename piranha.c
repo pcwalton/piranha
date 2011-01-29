@@ -9,16 +9,21 @@
 
 #include <linux/ptrace.h>
 #include <sys/ptrace.h>
+#include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <assert.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
+#include <unistd.h>
 #include "bstrlib.h"
 
 // The length of Bionic's __thread_entry routine. This is obviously a gross
@@ -35,6 +40,25 @@ struct map {
 struct basic_info {
     uint32_t thread_entry_offset;
 };
+
+// See comments in profile(). This lame thing is the result of Android's lack
+// of any signal handling mechanisms invented in the last 20 years.
+int signal_sockets[2];
+
+void signal_handler(int which)
+{
+    static bool sigint_handled = false;
+    if (which == SIGINT) {
+        if (sigint_handled) {
+            fprintf(stderr, "Caught two SIGINTs; aborting\n");
+            abort();
+        }
+        sigint_handled = true;
+    }
+
+    int8_t sig = which;
+    write(signal_sockets[1], &sig, sizeof(sig));
+}
 
 int compare_addr_and_map(const void *addr_p, const void *map_p)
 {
@@ -55,6 +79,7 @@ struct map *get_map_for_addr(bstring maps, uint32_t addr)
 
 void print_addr(struct map *map, uint32_t addr)
 {
+    return;
     if (!map) {
         printf("\"%08x\"", addr);
     } else {
@@ -411,6 +436,67 @@ out:
     return ok;
 }
 
+bool profile(struct basic_info *binfo, pid_t pid, bstring maps)
+{
+    // We have neither signalfd() nor sigwaitinfo() on Android so we have to do
+    // this dumb thing with socketpair() to get a performant event model.
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, signal_sockets)) {
+        perror("socketpair() failed");
+        return false;
+    }
+    if (pipe(signal_sockets)) {
+        perror("pipe() failed");
+        return false;
+    }
+
+    if (signal(SIGINT, signal_handler)) {
+        perror("signal(SIGINT) failed");
+        return false;
+    }
+    if (signal(SIGALRM, signal_handler)) {
+        perror("signal(SIGALRM) failed");
+        return false;
+    }
+
+    // Create the timer
+    struct sigevent sev;
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGALRM;
+    timer_t timer;
+    if (timer_create(CLOCK_REALTIME, &sev, &timer)) {
+        perror("timer_create() failed");
+        return false;
+    }
+
+    // Arm the timer
+    bool ok;
+    struct itimerspec itspec;
+    itspec.it_interval.tv_sec = 0;
+    itspec.it_interval.tv_nsec = 10000000;  // 10ms
+    itspec.it_value = itspec.it_interval;
+    if (timer_settime(timer, 0, &itspec, NULL)) {
+        perror("timer_settime() failed");
+        ok = false;
+        goto out;
+    }
+
+    int8_t sig;
+    while (read(signal_sockets[0], &sig, sizeof(sig))) {
+        switch (sig) {
+        case SIGALRM:
+            if (!(ok = sample(binfo, pid, maps)))
+                goto out;
+            break;
+        case SIGINT:
+            goto out;
+        }
+    }
+
+out:
+    timer_delete(timer);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     bool ok;
@@ -434,7 +520,7 @@ int main(int argc, char **argv)
     print_maps(maps);
 
     printf(",\n\t\"samples\": [\n");
-    ok = sample(&binfo, pid, maps);
+    ok = profile(&binfo, pid, maps);
     printf("\n\t]\n}\n");
 
     return !ok;
