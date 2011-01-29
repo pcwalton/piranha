@@ -214,7 +214,7 @@ bool wait_for_process_to_stop(pid_t pid)
 
 bool read_maps(pid_t pid, bstring *maps)
 {
-    int ok = true;
+    bool ok = true;
 
     bstring path = bformat("/proc/%d/maps", pid);
     if (!path)
@@ -264,9 +264,8 @@ void print_maps(bstring maps)
     for (int i = 0; i < maps->slen / sizeof(struct map); i++) {
         struct map *map = &((struct map *)maps->data)[i];
         printf("%s\n\t\t{ \"start\": \"%08x\", \"end\": \"%08x\", "
-               "\"offset\": \"%08x\", \"name\": \"%s\" }",
-               comma ? "," : "", map->start, map->end, map->offset,
-               map->name->data);
+               "\"offset\": \"%08x\", \"name\": \"%s\" }", comma ? "," : "",
+               map->start, map->end, map->offset, map->name->data);
         comma = true;
     }
 
@@ -285,6 +284,38 @@ void wait_for_thread_attachment(pid_t thread_pid)
     while (waitpid(thread_pid, &status, __WCLONE) <= 0) {
         // empty
     }
+}
+
+bool get_thread_state(pid_t thread_pid, bstring *result)
+{
+    bstring path = bformat("/proc/%d/status", thread_pid);
+    if (!path)
+        return false;
+
+    FILE *f = fopen((char *)path->data, "r");
+    bdestroy(path);
+    if (!f) {
+        perror("Failed to open /proc/x/status");
+        return false;
+    }
+
+    bool ok = false;
+
+    while (!feof(f)) {
+        bstring line = bgets((bNgetc)fgetc, f, '\n');
+        if (!line)
+            break;
+
+        char name[8];
+        if (!sscanf((char *)line->data, "State:\t%7s", name))
+            continue;
+
+        *result = bfromcstr(name);
+        ok = true;
+    }
+
+    fclose(f);
+    return ok;
 }
 
 bool sample(struct basic_info *binfo, pid_t pid, bstring maps)
@@ -306,29 +337,42 @@ bool sample(struct basic_info *binfo, pid_t pid, bstring maps)
 
     struct dirent *ent;
     bool comma = false;
-    while ((ent = readdir(tasks_dir))) {
+    while (ok && (ent = readdir(tasks_dir))) {
         int thread_pid;
         if (!sscanf(ent->d_name, "%d", &thread_pid))
             continue;
 
+        // We do this before we trace. If we don't, the status unhelpfully
+        // returns "T" for "traced".
+        bstring state;
+        if (!get_thread_state(thread_pid, &state)) {
+            ok = false;
+            break;
+        }
+
         if (ptrace(PTRACE_ATTACH, thread_pid, NULL, NULL))
-            continue;
+            goto next;
 
         if (pid == thread_pid)
             wait_for_process_to_stop(thread_pid);
         else
             wait_for_thread_attachment(thread_pid);
 
-        printf("%s\n\t\t\t\"%d\": ", comma ? "," : "", thread_pid);
+        printf("%s\n\t\t\t\"%d\": {", comma ? "," : "", thread_pid);
 
-        if (!unwind(binfo, (pid_t)thread_pid, maps)) {
+        printf("\n\t\t\t\t\"state\": \"%s\"", state->data);
+
+        printf(",\n\t\t\t\t\"stack\": ");
+        if (!unwind(binfo, (pid_t)thread_pid, maps))
             ok = false;
-            break;
-        }
+        printf("\n\t\t\t}");
 
         detach_from_thread((pid_t)thread_pid);
 
         comma = true;
+
+next:
+        bdestroy(state);
     }
 
     closedir(tasks_dir);
