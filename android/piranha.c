@@ -8,6 +8,7 @@
  */
 
 #include <linux/ptrace.h>
+#include <sys/mman.h>
 #include <sys/ptrace.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -18,10 +19,11 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
@@ -53,6 +55,8 @@ struct basic_info {
     pid_t pid;
     uint32_t thread_entry_offset;
     bstring maps;
+    int mem;
+    uint32_t mem_offset;
 };
 
 struct ebml_writer {
@@ -283,6 +287,39 @@ bool in_thread_entry(struct basic_info *binfo, struct map *map, uint32_t pc)
         rel_pc < binfo->thread_entry_offset + THREAD_ENTRY_LENGTH;
 }
 
+// Grabs a word from the stack.
+bool peek(struct basic_info *binfo, uint32_t addr, uint32_t *out)
+{
+    static int fast_paths = 0, slow_paths = 0;
+
+    if (addr == binfo->mem_offset) {
+        fast_paths++;
+    } else {
+        // Slow path: reposition
+        slow_paths++;
+        if (lseek(binfo->mem, addr, SEEK_SET) != addr) {
+            binfo->mem_offset = 0;
+            printf("failed seek\n");
+            return false;
+        }
+    }
+
+    if ((fast_paths + slow_paths) % 10000 == 0)
+        printf("fast: %d slow: %d\n", fast_paths, slow_paths);
+
+    //bool ok = !fread(out, 4, 1, binfo->mem);
+    bool ok = read(binfo->mem, out, 4) == 4;
+
+    static int zeroes = 0;
+    if (!*out)
+        zeroes++;
+    if (zeroes % 10000 == 0)
+        printf("zeroes: %d\n", zeroes);
+
+    binfo->mem_offset = addr + 4;
+    return ok;
+}
+
 bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
 {
     struct pt_regs regs;
@@ -318,8 +355,7 @@ bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
         uint32_t maybe_lr;
         do {
             errno = 0;
-            maybe_lr = ptrace(PTRACE_PEEKDATA, pid, (void *)sp, NULL);
-            if (errno) {
+            if (!peek(binfo, sp, &maybe_lr)) {
                 // Reached the end of the stack.
                 lr = 0;
                 break;
@@ -627,6 +663,19 @@ out:
     return ok;
 }
 
+bool open_memory(struct basic_info *binfo)
+{
+    bstring mem_path = bformat("/proc/%d/mem", (int)binfo->pid);
+    if (!mem_path)
+        return false;
+
+    bool ok = (binfo->mem = open((char *)mem_path->data, O_RDONLY)) >= 0;
+    binfo->mem_offset = 0;
+
+    bdestroy(mem_path);
+    return ok;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -648,9 +697,15 @@ int main(int argc, char **argv)
         goto out;
     }
 
+    // Initialize the basic info structure
     struct basic_info binfo;
+    memset(&binfo, '\0', sizeof(binfo));
     binfo.pid = strtol(argv[1], NULL, 0);
     if (!compute_thread_entry(&binfo)) {
+        ok = false;
+        goto out;
+    }
+    if (!open_memory(&binfo)) {
         ok = false;
         goto out;
     }
@@ -664,6 +719,7 @@ int main(int argc, char **argv)
 
 out:
     bdestroy(binfo.maps);
+    close(binfo.mem);
     ebml_finish(&ebml_writer);
     return !ok;
 }
