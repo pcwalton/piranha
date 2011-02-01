@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
+#include <arpa/inet.h>
 #include <assert.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -30,6 +31,17 @@
 // hack, of which I am ashamed.
 #define THREAD_ENTRY_LENGTH     0x3c
 
+#define EBML_HEADER_TAG         0x1a45dfa3
+#define EBML_MEMORY_MAP_TAG     0x81
+#define EBML_MEMORY_REGION_TAG  0x82
+#define EBML_SAMPLES_TAG        0x83
+#define EBML_SAMPLE_TAG         0x84
+#define EBML_THREAD_SAMPLE_TAG  0x85
+#define EBML_THREAD_STATUS_TAG  0x86
+#define EBML_STACK_TAG          0x87
+
+#define length_of(x)    (sizeof(x) / sizeof((x)[0]))
+
 struct map {
     uint32_t start;
     uint32_t end;
@@ -38,8 +50,110 @@ struct map {
 };
 
 struct basic_info {
+    pid_t pid;
     uint32_t thread_entry_offset;
+    bstring maps;
 };
+
+struct ebml_writer {
+    FILE *f;
+    uint32_t tag_offsets[4];
+    int tag_stack_size;
+};
+
+//
+// EBML writing
+//
+
+bool ebml_start_tag(struct ebml_writer *writer, uint32_t tag_id)
+{
+    assert(tag_stack_size < length_of(writer->tag_offsets));
+
+    uint32_t buf = htonl(tag_id);
+
+    bool ok;
+    if (tag_id & 0xff000000)
+        ok = !!fwrite(&buf, 4, 1, writer->f);
+    else if (tag_id & 0x00ff0000)
+        ok = !!fwrite((char *)&buf + 1, 3, 1, writer->f);
+    else if (tag_id & 0x0000ff00)
+        ok = !!fwrite((char *)&buf + 2, 2, 1, writer->f);
+    else
+        ok = !!fwrite((char *)&buf + 3, 1, 1, writer->f);
+
+    if (!ok)
+        return false;
+
+    writer->tag_offsets[writer->tag_stack_size++] = ftell(writer->f);
+
+    // Write a placeholder size
+    uint32_t zero = 0;
+    if (!fwrite(&zero, 4, 1, writer->f))
+        return false;
+
+    return true;
+}
+
+void ebml_end_tag(struct ebml_writer *writer)
+{
+    assert(writer->tag_stack_size);
+
+    uint32_t orig_offset = ftell(writer->f);
+    uint32_t offset = writer->tag_offsets[writer->tag_stack_size - 1];
+    uint32_t size = ftell(writer->f) - offset - 4;
+    assert(size < 0x10000000);
+
+    fseek(writer->f, offset, SEEK_SET);
+    fputc(0x10 | ((size >> 24) & 0xf), writer->f);
+    fputc((size >> 16) & 0xff, writer->f);
+    fputc((size >> 8) & 0xff, writer->f);
+    fputc(size & 0xff, writer->f);
+
+    fseek(writer->f, orig_offset, SEEK_SET);
+
+    writer->tag_stack_size--;
+}
+
+bool ebml_write_header(struct ebml_writer *writer, const_bstring format_name)
+{
+    if (!ebml_start_tag(writer, EBML_HEADER_TAG))
+        return false;
+
+    bstring name_buf = bfromcstralloc(128, "");
+    if (!name_buf)
+        return false;
+
+    bool ok = true;
+    if (binsertch(name_buf, 0, 32, '\0') != BSTR_OK) {
+        fprintf(stderr, "bpattern()\n");
+        ok = false;
+        goto out;
+    }
+    if (bsetstr(name_buf, 0, format_name, '\0') != BSTR_OK) {
+        fprintf(stderr, "bsetstr()\n");
+        ok = false;
+        goto out;
+    }
+
+    if (!fwrite(name_buf->data, name_buf->slen + 1, 1, writer->f)) {
+        perror("fwrite");
+        ok = false;
+        goto out;
+    }
+
+    ebml_end_tag(writer);
+
+out:
+    bdestroy(name_buf);
+    return ok;
+}
+
+void ebml_finish(struct ebml_writer *writer)
+{
+    while (writer->tag_stack_size)
+        ebml_end_tag(writer);
+    fclose(writer->f);
+}
 
 // See comments in profile(). This lame thing is the result of Android's lack
 // of any signal handling mechanisms invented in the last 20 years.
@@ -75,17 +189,6 @@ struct map *get_map_for_addr(bstring maps, uint32_t addr)
 {
     return (struct map *)bsearch(&addr, maps->data, maps->slen /
         sizeof(struct map), sizeof(struct map), compare_addr_and_map);
-}
-
-void print_addr(struct map *map, uint32_t addr)
-{
-    return;
-    if (!map) {
-        printf("\"%08x\"", addr);
-    } else {
-        printf("\"%s+%08x\"", map->name->data, addr - map->start +
-            map->offset); 
-    }
 }
 
 bool guess_lr_legitimacy(pid_t pid, uint32_t maybe_lr, uint32_t *real_lr)
@@ -180,7 +283,7 @@ bool in_thread_entry(struct basic_info *binfo, struct map *map, uint32_t pc)
         rel_pc < binfo->thread_entry_offset + THREAD_ENTRY_LENGTH;
 }
 
-bool unwind(struct basic_info *binfo, pid_t pid, bstring maps)
+bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
 {
     struct pt_regs regs;
     memset(&regs, '\0', sizeof(regs));
@@ -191,10 +294,12 @@ bool unwind(struct basic_info *binfo, pid_t pid, bstring maps)
         return false;
     }
 
-    printf("[ ");
+    ebml_start_tag(writer, EBML_STACK_TAG);
 
-    struct map *map = get_map_for_addr(maps, regs.ARM_pc - 8);
-    print_addr(map, regs.ARM_pc - 4);
+    struct map *map = get_map_for_addr(binfo->maps, regs.ARM_pc - 8);
+    uint32_t val = htonl(regs.ARM_pc - 4);
+    if (!fwrite(&val, 4, 1, writer->f))
+        return false;
 
     uint32_t lr = regs.ARM_lr & 0xfffffffe, sp = regs.ARM_sp;
 
@@ -202,9 +307,13 @@ bool unwind(struct basic_info *binfo, pid_t pid, bstring maps)
     printf(" /* sp: %08x */", sp);
 #endif
 
+    bool ok = true;
     while (lr && !in_thread_entry(binfo, map, lr)) {
-        printf(", ");
-        print_addr(map, lr);
+        val = htonl(lr);
+        if (!fwrite(&val, 4, 1, writer->f)) {
+            ok = false;
+            break;
+        }
 
         uint32_t maybe_lr;
         do {
@@ -219,11 +328,11 @@ bool unwind(struct basic_info *binfo, pid_t pid, bstring maps)
             sp += 4;
         } while (!guess_lr_legitimacy(pid, maybe_lr, &lr));
 
-        map = get_map_for_addr(maps, lr);
+        map = get_map_for_addr(binfo->maps, lr);
     }
 
-    printf(" ]");
-    return true;
+    ebml_end_tag(writer);
+    return ok;
 }
 
 bool wait_for_process_to_stop(pid_t pid)
@@ -280,21 +389,32 @@ out:
     return ok;
 }
 
-void print_maps(bstring maps)
+bool print_maps(struct ebml_writer *writer, bstring maps)
 {
-    bool comma = false;
-
-    printf("[");
+    if (!ebml_start_tag(writer, EBML_MEMORY_MAP_TAG))
+        return false;
 
     for (int i = 0; i < maps->slen / sizeof(struct map); i++) {
         struct map *map = &((struct map *)maps->data)[i];
-        printf("%s\n\t\t{ \"start\": \"%08x\", \"end\": \"%08x\", "
-               "\"offset\": \"%08x\", \"name\": \"%s\" }", comma ? "," : "",
-               map->start, map->end, map->offset, map->name->data);
-        comma = true;
+
+        if (!ebml_start_tag(writer, EBML_MEMORY_REGION_TAG))
+            return false;
+
+        uint32_t val = htonl(map->start);
+        if (!fwrite(&val, 4, 1, writer->f))
+            return false;
+        val = htonl(map->end);
+        if (!fwrite(&val, 4, 1, writer->f))
+            return false;
+        if (!fwrite(map->name->data, map->name->slen + 1, 1, writer->f))
+            return false;
+
+        ebml_end_tag(writer);
     }
 
-    printf("\n\t]");
+    ebml_end_tag(writer);
+
+    return true;
 }
 
 void detach_from_thread(pid_t thread_pid)
@@ -343,13 +463,12 @@ bool get_thread_state(pid_t thread_pid, bstring *result)
     return ok;
 }
 
-bool sample(struct basic_info *binfo, pid_t pid, bstring maps)
+bool sample(struct basic_info *binfo, struct ebml_writer *writer)
 {
-    bool ok = true;
+    if (!ebml_start_tag(writer, EBML_SAMPLE_TAG))
+        return false;
 
-    printf("\t\t{");
-
-    bstring tasks_path = bformat("/proc/%d/task", (int)pid);
+    bstring tasks_path = bformat("/proc/%d/task", (int)binfo->pid);
     if (!tasks_path)
         return false;
 
@@ -361,7 +480,7 @@ bool sample(struct basic_info *binfo, pid_t pid, bstring maps)
     }
 
     struct dirent *ent;
-    bool comma = false;
+    bool ok = true;
     while (ok && (ent = readdir(tasks_dir))) {
         int thread_pid;
         if (!sscanf(ent->d_name, "%d", &thread_pid))
@@ -376,31 +495,38 @@ bool sample(struct basic_info *binfo, pid_t pid, bstring maps)
         }
 
         if (ptrace(PTRACE_ATTACH, thread_pid, NULL, NULL))
-            goto next;
+            continue;
 
-        if (pid == thread_pid)
+        if (binfo->pid == thread_pid)
             wait_for_process_to_stop(thread_pid);
         else
             wait_for_thread_attachment(thread_pid);
 
-        printf("%s\n\t\t\t\"%d\": {", comma ? "," : "", thread_pid);
-
-        printf("\n\t\t\t\t\"state\": \"%s\"", state->data);
-
-        printf(",\n\t\t\t\t\"stack\": ");
-        if (!unwind(binfo, (pid_t)thread_pid, maps))
+        if (!ebml_start_tag(writer, EBML_THREAD_SAMPLE_TAG)) {
             ok = false;
-        printf("\n\t\t\t}");
+            break;
+        }
+
+        if (!ebml_start_tag(writer, EBML_THREAD_STATUS_TAG)) {
+            ok = false;
+            break;
+        }
+        if (!fwrite(state->data, state->slen + 1, 1, writer->f)) {
+            ok = false;
+            break;
+        }
+        ebml_end_tag(writer);
+
+        if (!unwind(binfo, writer, thread_pid))
+            ok = false;
 
         detach_from_thread((pid_t)thread_pid);
 
-        comma = true;
-
-next:
-        bdestroy(state);
+        ebml_end_tag(writer);
     }
 
     closedir(tasks_dir);
+    ebml_end_tag(writer);
     return ok;
 }
 
@@ -436,8 +562,11 @@ out:
     return ok;
 }
 
-bool profile(struct basic_info *binfo, pid_t pid, bstring maps)
+bool profile(struct basic_info *binfo, struct ebml_writer *writer)
 {
+    if (!ebml_start_tag(writer, EBML_SAMPLES_TAG))
+        return false;
+
     // We have neither signalfd() nor sigwaitinfo() on Android so we have to do
     // this dumb thing with socketpair() to get a performant event model.
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, signal_sockets)) {
@@ -484,7 +613,7 @@ bool profile(struct basic_info *binfo, pid_t pid, bstring maps)
     while (read(signal_sockets[0], &sig, sizeof(sig))) {
         switch (sig) {
         case SIGALRM:
-            if (!(ok = sample(binfo, pid, maps)))
+            if (!(ok = sample(binfo, writer)))
                 goto out;
             break;
         case SIGINT:
@@ -494,35 +623,48 @@ bool profile(struct basic_info *binfo, pid_t pid, bstring maps)
 
 out:
     timer_delete(timer);
+    ebml_end_tag(writer);
     return ok;
 }
 
 int main(int argc, char **argv)
 {
-    bool ok;
-
     if (argc < 2) {
         fprintf(stderr, "usage: piranha PID\n");
         return 1;
     }
 
+    struct ebml_writer ebml_writer;
+    memset(&ebml_writer, '\0', sizeof(ebml_writer));
+    if (!(ebml_writer.f = fopen("profile.ebml", "wb"))) {
+        perror("Couldn't open \"profile.ebml\"");
+        return 1;
+    }
+
+    bool ok = true;
+    struct tagbstring format_name = bsStatic("piranha-samples");
+    if (!ebml_write_header(&ebml_writer, &format_name)) {
+        fprintf(stderr, "Couldn't write header\n");
+        goto out;
+    }
+
     struct basic_info binfo;
-    if (!compute_thread_entry(&binfo))
-        return 1;
+    binfo.pid = strtol(argv[1], NULL, 0);
+    if (!compute_thread_entry(&binfo)) {
+        ok = false;
+        goto out;
+    }
+    if (!read_maps(binfo.pid, &binfo.maps)) {
+        ok = false;
+        goto out;
+    }
+    print_maps(&ebml_writer, binfo.maps);
 
-    pid_t pid = strtol(argv[1], NULL, 0);
+    ok = profile(&binfo, &ebml_writer);
 
-    bstring maps;
-    if (!read_maps(pid, &maps))
-        return 1;
-
-    printf("{\n\t\"maps\": ");
-    print_maps(maps);
-
-    printf(",\n\t\"samples\": [\n");
-    ok = profile(&binfo, pid, maps);
-    printf("\n\t]\n}\n");
-
+out:
+    bdestroy(binfo.maps);
+    ebml_finish(&ebml_writer);
     return !ok;
 }
 
