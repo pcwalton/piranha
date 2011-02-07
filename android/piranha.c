@@ -34,13 +34,16 @@
 #define THREAD_ENTRY_LENGTH     0x3c
 
 #define EBML_HEADER_TAG         0x1a45dfa3
-#define EBML_MEMORY_MAP_TAG     0x81
-#define EBML_MEMORY_REGION_TAG  0x82
-#define EBML_SAMPLES_TAG        0x83
-#define EBML_SAMPLE_TAG         0x84
-#define EBML_THREAD_SAMPLE_TAG  0x85
-#define EBML_THREAD_STATUS_TAG  0x86
-#define EBML_STACK_TAG          0x87
+#define EBML_MEMORY_MAP_TAG     0x81          // root level
+#define EBML_MEMORY_REGION_TAG  0x82          // contained by MEMORY_MAP
+#define EBML_SAMPLES_TAG        0x83          // root level
+#define EBML_SAMPLE_TAG         0x84          // contained by SAMPLES
+#define EBML_THREAD_SAMPLE_TAG  0x85          // contained by SAMPLE
+#define EBML_THREAD_STATUS_TAG  0x86          // contained by THREAD_SAMPLE
+#define EBML_STACK_TAG          0x87          // contained by THREAD_SAMPLE
+#define EBML_SYMBOLS_TAG        0x88          // root level
+#define EBML_MODULE_TAG         0x89          // contained by SYMBOLS
+#define EBML_SYMBOL_TAG         0x8a          // contained by MODULE
 
 #define length_of(x)    (sizeof(x) / sizeof((x)[0]))
 
@@ -55,7 +58,7 @@ struct basic_info {
     pid_t pid;
     uint32_t thread_entry_offset;
     bstring maps;
-    int mem;
+    FILE *mem;
     uint32_t mem_offset;
 };
 
@@ -297,24 +300,26 @@ bool peek(struct basic_info *binfo, uint32_t addr, uint32_t *out)
     } else {
         // Slow path: reposition
         slow_paths++;
-        if (lseek(binfo->mem, addr, SEEK_SET) != addr) {
+        if (fseeko(binfo->mem, addr, SEEK_SET)) {
             binfo->mem_offset = 0;
             printf("failed seek\n");
             return false;
         }
+        assert(ftello(binfo->mem) == addr);
     }
 
-    if ((fast_paths + slow_paths) % 10000 == 0)
-        printf("fast: %d slow: %d\n", fast_paths, slow_paths);
+    /*if ((fast_paths + slow_paths) % 10000 == 0)
+        printf("fast: %d slow: %d\n", fast_paths, slow_paths);*/
 
-    //bool ok = !fread(out, 4, 1, binfo->mem);
-    bool ok = read(binfo->mem, out, 4) == 4;
+    bool ok = !!fread(out, 4, 1, binfo->mem);
 
-    static int zeroes = 0;
-    if (!*out)
+    /*static int zeroes = 0, nonzeroes = 0;
+    if (!*out == 0)
         zeroes++;
-    if (zeroes % 10000 == 0)
-        printf("zeroes: %d\n", zeroes);
+    else
+        nonzeroes++;
+    if (!((zeroes + nonzeroes) % 10000))
+        printf("zeroes: %d, nonzeroes=%d\n", zeroes, nonzeroes);*/
 
     binfo->mem_offset = addr + 4;
     return ok;
@@ -344,6 +349,8 @@ bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
     printf(" /* sp: %08x */", sp);
 #endif
 
+    static int loop_count = 0;
+
     bool ok = true;
     while (lr && !in_thread_entry(binfo, map, lr)) {
         val = htonl(lr);
@@ -368,6 +375,7 @@ bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
     }
 
     ebml_end_tag(writer);
+
     return ok;
 }
 
@@ -459,12 +467,10 @@ void detach_from_thread(pid_t thread_pid)
         perror("Failed to detach from thread");
 }
 
-void wait_for_thread_attachment(pid_t thread_pid)
+bool wait_for_thread_attachment(pid_t thread_pid)
 {
     int status;
-    while (waitpid(thread_pid, &status, __WCLONE) <= 0) {
-        // empty
-    }
+    return waitpid(thread_pid, &status, __WCLONE) >= 0;
 }
 
 bool get_thread_state(pid_t thread_pid, bstring *result)
@@ -515,6 +521,8 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
         return false;
     }
 
+    fflush(binfo->mem);
+
     struct dirent *ent;
     bool ok = true;
     while (ok && (ent = readdir(tasks_dir))) {
@@ -535,8 +543,8 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
 
         if (binfo->pid == thread_pid)
             wait_for_process_to_stop(thread_pid);
-        else
-            wait_for_thread_attachment(thread_pid);
+        else if (!wait_for_thread_attachment(thread_pid))
+            continue;
 
         if (!ebml_start_tag(writer, EBML_THREAD_SAMPLE_TAG)) {
             ok = false;
@@ -669,7 +677,7 @@ bool open_memory(struct basic_info *binfo)
     if (!mem_path)
         return false;
 
-    bool ok = (binfo->mem = open((char *)mem_path->data, O_RDONLY)) >= 0;
+    bool ok = !!(binfo->mem = fopen((char *)mem_path->data, "rb"));
     binfo->mem_offset = 0;
 
     bdestroy(mem_path);
@@ -719,7 +727,7 @@ int main(int argc, char **argv)
 
 out:
     bdestroy(binfo.maps);
-    close(binfo.mem);
+    fclose(binfo.mem);
     ebml_finish(&ebml_writer);
     return !ok;
 }
