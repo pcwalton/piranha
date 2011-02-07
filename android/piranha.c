@@ -43,7 +43,8 @@
 #define EBML_STACK_TAG          0x87          // contained by THREAD_SAMPLE
 #define EBML_SYMBOLS_TAG        0x88          // root level
 #define EBML_MODULE_TAG         0x89          // contained by SYMBOLS
-#define EBML_SYMBOL_TAG         0x8a          // contained by MODULE
+#define EBML_MODULE_NAME_TAG    0x8a          // contained by MODULE
+#define EBML_SYMBOL_TAG         0x8b          // contained by MODULE
 
 #define length_of(x)    (sizeof(x) / sizeof((x)[0]))
 
