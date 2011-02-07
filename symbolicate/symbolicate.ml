@@ -17,9 +17,44 @@ type memory_region = {
     mr_name: string;
 }
 
-let get_build_info() =
-    let cmd = "adb shell run-as org.mozilla.fennec cat application.ini" in
-    let f = Unix.open_process_in cmd in
+type program_options = {
+    po_input_path: string;
+    po_output_path: string;
+    po_application_ini: string option;
+}
+
+let get_program_options() =
+    let oparser =
+        OptParse.OptParser.make
+            ~usage:"%prog [options] INPUT-PATH OUTPUT-PATH"
+            ~version:"0.1"
+            () in
+    let application_ini = OptParse.Opt.value_option "PATH" None
+        Std.identity (fun e s -> s) in
+    OptParse.OptParser.add
+        oparser
+        ~help:"application.ini file for Fennec"
+        ~short_name:'a'
+        ~long_name:"application-ini"
+        application_ini;
+    let remaining_args = OptParse.OptParser.parse_argv oparser in
+    if List.length remaining_args <> 2 then begin
+        OptParse.OptParser.usage oparser ();
+        exit 1
+    end;
+    {
+        po_input_path = List.hd remaining_args;
+        po_output_path = List.nth remaining_args 1;
+        po_application_ini = OptParse.Opt.opt application_ini;
+    }
+
+let get_build_info application_ini =
+    let f = 
+        match application_ini with
+        | None ->
+            fst (Unix.open_process
+                "adb shell run-as org.mozilla.fennec cat application.ini")
+        | Some path -> open_in path in
     Std.finally (fun() -> close_in f) begin fun() ->
         let kvps = Hashtbl.create 0 in
         Std.finally (fun() -> close_in f) begin fun() ->
@@ -150,14 +185,16 @@ let get_cache_dir binfo =
             binfo.bi_version
             binfo.bi_build_id in
     (* mkdir -p *)
-    List.fold_left begin fun pathname component ->
-        let pathname = pathname ^ component ^ "/" in
-        begin
-            try Unix.mkdir pathname 0o775
-            with Unix.Unix_error(Unix.EEXIST, _, _) -> ()
-        end;
-        pathname
-    end "" (ExtString.String.nsplit path "/");
+    ignore begin
+        List.fold_left begin fun pathname component ->
+            let pathname = pathname ^ component ^ "/" in
+            begin
+                try Unix.mkdir pathname 0o775
+                with Unix.Unix_error(Unix.EEXIST, _, _) -> ()
+            end;
+            pathname
+        end "" (ExtString.String.nsplit path "/")
+    end;
     path
 
 let fetch_symbols cache_dir symbol_urls module_name =
@@ -189,12 +226,9 @@ let fetch_and_write_symbols outf cache_dir symbol_urls module_name =
     ignore(fetch_symbols cache_dir symbol_urls module_name)
 
 let main() =
-    if Array.length Sys.argv < 3 then begin
-        prerr_endline "usage: piranha-symbolicate INPUT OUTPUT";
-        exit 1
-    end;
-    let input_path, output_path = Sys.argv.(1), Sys.argv.(2) in
-    let inf, outf = open_in_bin input_path, open_out_bin output_path in
+    let opts = get_program_options() in
+    let inf = open_in_bin opts.po_input_path in
+    let outf = open_out_bin opts.po_output_path in
     Std.finally (fun() -> close_in inf; close_out outf) begin fun() ->
         let modules = get_modules inf in
 
@@ -218,7 +252,7 @@ let main() =
         let writer = EBML.make_ebml_writer outf in
 
         (* Fetch the symbols we need. *)
-        let binfo = get_build_info() in
+        let binfo = get_build_info opts.po_application_ini in
         let cache_dir = get_cache_dir binfo in
         let symbol_urls = get_symbol_urls binfo in
         Hashtbl.iter
