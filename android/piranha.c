@@ -3,7 +3,7 @@
  *
  * Tiny Android profiler
  *
- * Copyright (c) 2011 Mozilla Corporation
+ * Copyright (c) 2011 Mozilla Foundation
  * Patrick Walton <pcwalton@mimiga.net>
  */
 
@@ -45,6 +45,7 @@
 #define EBML_MODULE_TAG         0x89          // contained by SYMBOLS
 #define EBML_MODULE_NAME_TAG    0x8a          // contained by MODULE
 #define EBML_SYMBOL_TAG         0x8b          // contained by MODULE
+#define EBML_THREAD_PID_TAG     0x8c          // contained by THREAD_SAMPLE
 
 #define length_of(x)    (sizeof(x) / sizeof((x)[0]))
 
@@ -59,7 +60,7 @@ struct basic_info {
     pid_t pid;
     uint32_t thread_entry_offset;
     bstring maps;
-    FILE *mem;
+    int mem;
     uint32_t mem_offset;
 };
 
@@ -301,18 +302,18 @@ bool peek(struct basic_info *binfo, uint32_t addr, uint32_t *out)
     } else {
         // Slow path: reposition
         slow_paths++;
-        if (fseeko(binfo->mem, addr, SEEK_SET)) {
+        if (lseek64(binfo->mem, addr, SEEK_SET) == -1) {
             binfo->mem_offset = 0;
-            printf("failed seek\n");
+            perror("failed seek");
             return false;
         }
-        assert(ftello(binfo->mem) == addr);
+        assert(lseek64(binfo->mem, 0, SEEK_CUR) == addr);
     }
 
     /*if ((fast_paths + slow_paths) % 10000 == 0)
         printf("fast: %d slow: %d\n", fast_paths, slow_paths);*/
 
-    bool ok = !!fread(out, 4, 1, binfo->mem);
+    bool ok = read(binfo->mem, out, 4) == 4;
 
     /*static int zeroes = 0, nonzeroes = 0;
     if (!*out == 0)
@@ -393,6 +394,7 @@ bool wait_for_process_to_stop(pid_t pid)
 
 bool read_maps(pid_t pid, bstring *maps)
 {
+    struct tagbstring dev_ashmem_lib = bsStatic("/dev/ashmem/lib");
     bool ok = true;
 
     bstring path = bformat("/proc/%d/maps", pid);
@@ -405,6 +407,9 @@ bool read_maps(pid_t pid, bstring *maps)
         perror("Failed to open /proc/x/maps");
         return false;
     }
+
+    struct map ashmem_map;
+    bool reading_ashmem_map = false;
 
     *maps = bfromcstr("");
     while (!feof(f)) {
@@ -419,10 +424,40 @@ bool read_maps(pid_t pid, bstring *maps)
             name);
         bdestroy(line);
 
-        if (!field_count)
-            break;
+        if (field_count < 4)
+            continue;
 
         map.name = bfromcstr(name);
+
+        // If we're reading an ashmem library, check for the end now.
+        if (reading_ashmem_map && bstrcmp(ashmem_map.name, map.name)) {
+            // We reached the end.
+            ashmem_map.end = map.start;
+
+            if (bcatblk(*maps, &ashmem_map, sizeof(ashmem_map))
+                    != BSTR_OK) {
+                bdestroy(ashmem_map.name);
+                break;
+            }
+
+            reading_ashmem_map = false;
+        }
+
+        // Check whether this is an ashmem library (as used in Fennec's dynamic
+        // linker).
+        if (!reading_ashmem_map && !binstr(map.name, 0, &dev_ashmem_lib)) {
+            ashmem_map = map;
+            reading_ashmem_map = true;
+            continue;
+        }
+
+        // If we got here and we're still reading the ashmem map, then discard
+        // the current map; it's part of the ashmem map we're still reading.
+        if (reading_ashmem_map) {
+            bdestroy(map.name);
+            continue;
+        }
+
         if (bcatblk(*maps, &map, sizeof(map)) != BSTR_OK) {
             bdestroy(map.name);
             break;
@@ -449,6 +484,9 @@ bool print_maps(struct ebml_writer *writer, bstring maps)
         if (!fwrite(&val, 4, 1, writer->f))
             return false;
         val = htonl(map->end);
+        if (!fwrite(&val, 4, 1, writer->f))
+            return false;
+        val = htonl(map->offset);
         if (!fwrite(&val, 4, 1, writer->f))
             return false;
         if (!fwrite(map->name->data, map->name->slen + 1, 1, writer->f))
@@ -522,8 +560,6 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
         return false;
     }
 
-    fflush(binfo->mem);
-
     struct dirent *ent;
     bool ok = true;
     while (ok && (ent = readdir(tasks_dir))) {
@@ -551,6 +587,17 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
             ok = false;
             break;
         }
+
+        if (!ebml_start_tag(writer, EBML_THREAD_PID_TAG)) {
+            ok = false;
+            break;
+        }
+        uint32_t pid_buf = htonl(thread_pid);
+        if (!fwrite(&pid_buf, sizeof(pid_buf), 1, writer->f)) {
+            ok = false;
+            break;
+        }
+        ebml_end_tag(writer);
 
         if (!ebml_start_tag(writer, EBML_THREAD_STATUS_TAG)) {
             ok = false;
@@ -678,7 +725,7 @@ bool open_memory(struct basic_info *binfo)
     if (!mem_path)
         return false;
 
-    bool ok = !!(binfo->mem = fopen((char *)mem_path->data, "rb"));
+    bool ok = (binfo->mem = open((char *)mem_path->data, O_RDONLY)) >= 0;
     binfo->mem_offset = 0;
 
     bdestroy(mem_path);
@@ -728,7 +775,7 @@ int main(int argc, char **argv)
 
 out:
     bdestroy(binfo.maps);
-    fclose(binfo.mem);
+    close(binfo.mem);
     ebml_finish(&ebml_writer);
     return !ok;
 }

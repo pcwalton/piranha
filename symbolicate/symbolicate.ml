@@ -14,7 +14,9 @@ type build_info = {
 type memory_region = {
     mr_start: int32;
     mr_end: int32;
+    mr_offset: int32;
     mr_name: string;
+    mr_path: string;
 }
 
 type program_options = {
@@ -173,17 +175,20 @@ let get_modules f =
         let in_io = IO.input_channel f in
         let region_start = IO.BigEndian.read_real_i32 in_io in
         let region_end = IO.BigEndian.read_real_i32 in_io in
+        let region_offset = IO.BigEndian.read_real_i32 in_io in
 
-        let region_name = IO.read_string in_io in
+        let region_path = IO.read_string in_io in
         let region_name = ExtList.List.last
-            (ExtString.String.nsplit region_name "/") in
+            (ExtString.String.nsplit region_path "/") in
 
         seek_in f (pos + size);
 
         let region = {
             mr_start = region_start;
             mr_end = region_end;
-            mr_name = region_name
+            mr_offset = region_offset;
+            mr_name = region_name;
+            mr_path = region_path
         } in
         DynArray.add regions region
     done;
@@ -281,9 +286,10 @@ let write_symbols writer module_name symbols_path =
         EBML.end_tag writer
     end ()
 
-let fetch_and_write_symbols writer cache_dir symbol_urls module_name =
-    let symbols_path_opt = fetch_symbols cache_dir symbol_urls module_name in
-    Option.may (write_symbols writer module_name) symbols_path_opt
+let fetch_and_write_symbols writer cache_dir symbol_urls mregion =
+    let symbols_path_opt =
+        fetch_symbols cache_dir symbol_urls mregion.mr_name in
+    Option.may (write_symbols writer mregion.mr_path) symbols_path_opt
 
 let main() =
     let opts = get_program_options() in
@@ -302,10 +308,9 @@ let main() =
             with End_of_file -> ()
         end;
 
-        (* Gather up a list of modules we want to find symbols for. *)
+        (* Gather up a list of modules we want to find information for. *)
         let module_list = Hashtbl.create 0 in
-        Array.iter
-            (fun mr -> Hashtbl.replace module_list mr.mr_name ())
+        Array.iter (fun mr -> Hashtbl.replace module_list mr.mr_name mr)
             modules;
 
         (* Write the symbols header. *)
@@ -317,7 +322,7 @@ let main() =
         let cache_dir = get_cache_dir binfo in
         let symbol_urls = get_symbol_urls binfo in
         Hashtbl.iter
-            (fun k _ -> fetch_and_write_symbols writer cache_dir symbol_urls k)
+            (fun _ v -> fetch_and_write_symbols writer cache_dir symbol_urls v)
             module_list;
 
         (* Finish up. *)
