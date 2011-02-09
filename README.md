@@ -6,14 +6,14 @@ Building
 
 You'll need the following to build from source. There are too many
 source dependencies, unfortunately, but there's not a whole lot we can do here;
-Android's build system is gnarly.
+Android's build system is gnarly. The OCaml dependencies 
 
 * The Android SDK, with the `adb` utility.
 * The Android Open Source Project, built in a place where `agcc` can find it.
 * The `agcc` script [1].
 * Objective Caml [2].
-* Findlib for OCaml [3].
-* The OCaml `extlib` library [4].
+* `libcurl`. You probably already have this installed, if you're on Mac or
+  Linux.
 
 To build:
 
@@ -51,4 +51,5 @@ Use the web app to examine the results:
 2. Click the file chooser, and open your `profile-syms.ebml` file.
 
 [1]: http://www.mozilla.com/en-US/mobile/
+[2]: http://caml.inria.fr/
 

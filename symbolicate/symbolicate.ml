@@ -85,7 +85,18 @@ let get_symbol_urls build_info =
         build_info.bi_version
         build_info.bi_build_id in
     Printf.eprintf "Fetching %s..." url;
-    let response = Http_client.Convenience.http_get url in
+
+    let curl = Curl.init() in
+    let response = Std.finally (fun() -> Curl.cleanup curl) begin fun() ->
+        let buf = Buffer.create 0 in
+        Curl.set_writefunction curl begin fun s ->
+            Buffer.add_string buf s; String.length s
+        end;
+        Curl.set_url curl url;
+        Curl.perform curl;
+        Buffer.contents buf
+    end () in
+
     prerr_endline "done.";
 
     let urls = Hashtbl.create 0 in
@@ -164,7 +175,7 @@ let get_modules f =
         let pos = pos_in f in
         seek_in f (pos + size);
     done;
-    let size, _ = EBML.read_vint f in
+    ignore(EBML.read_vint f);
 
     (* Now look for each MEMORY_REGION element. *)
     let regions = DynArray.create() in
@@ -229,12 +240,19 @@ let fetch_symbols cache_dir symbol_urls module_name =
                 Printf.eprintf "Fetching symbols for '%s'..." module_name;
                 flush stderr;
                 let url = Hashtbl.find symbol_urls module_name in
-                let msg = new Http_client.get url in
-                msg#set_response_body_storage (`File (fun() -> path));
-                let pipeline = new Http_client.pipeline in
-                pipeline#add msg;
-                pipeline#run();
-                assert(msg#status = `Successful);
+
+                let curl = Curl.init() in
+                Std.finally (fun() -> Curl.cleanup curl) begin fun() ->
+                    let outf = open_out path in
+                    Std.finally (fun() -> close_out outf) begin fun() ->
+                        Curl.set_writefunction curl begin fun s ->
+                            output_string outf s; String.length s
+                        end;
+                        Curl.set_url curl url;
+                        Curl.perform curl
+                    end ()
+                end ();
+
                 prerr_endline "done.";
                 flush stderr
         end;
@@ -292,6 +310,7 @@ let fetch_and_write_symbols writer cache_dir symbol_urls mregion =
     Option.may (write_symbols writer mregion.mr_path) symbols_path_opt
 
 let main() =
+    Curl.global_init Curl.CURLINIT_GLOBALALL;
     let opts = get_program_options() in
     let inf = open_in_bin opts.po_input_path in
     let outf = open_out_bin opts.po_output_path in
