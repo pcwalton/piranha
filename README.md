@@ -8,8 +8,9 @@ You'll need the following to build from source. There are too many
 source dependencies, unfortunately, but there's not a whole lot we can do here;
 Android's build system is gnarly. The OCaml dependencies 
 
-* The Android SDK, with the `adb` utility.
-* The Android Open Source Project, built in a place where `agcc` can find it.
+* The Android SDK, version 8 (version 5 will not work) with the `adb` utility.
+* The Android Open Source Project, version 8, built in a place where `agcc` can
+  find it.
 * The `agcc` script [1].
 * Objective Caml [2].
 * `libcurl`. You probably already have this installed, if you're on Mac or
