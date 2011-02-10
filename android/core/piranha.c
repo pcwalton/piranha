@@ -76,7 +76,7 @@ struct ebml_writer {
 
 bool ebml_start_tag(struct ebml_writer *writer, uint32_t tag_id)
 {
-    assert(tag_stack_size < length_of(writer->tag_offsets));
+    assert(writer->tag_stack_size < length_of(writer->tag_offsets));
 
     uint32_t buf = htonl(tag_id);
 

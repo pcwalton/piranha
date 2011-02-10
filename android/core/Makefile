@@ -1,5 +1,5 @@
 CC=$(HOME)/Applications/agcc
-CFLAGS+=-std=c99
+CFLAGS+=-std=c99 -UNDEBUG
 
 all:    piranha
 
