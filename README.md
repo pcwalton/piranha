@@ -18,11 +18,15 @@ Android's build system is gnarly. The OCaml dependencies
 
 To build:
 
-1. `$ cd android`
+1. `$ cd android/core`
 2. Edit the `Makefile` to point to your `agcc` location.
 3. `$ make`
 4. `$ cd ../symbolicate`
 5. `$ make`
+
+Alternately, you can skip steps 1-3 with the prebuilt binary on GitHub. Click
+on the "Downloads" button in the top right corner of the project page and
+downlaod the prebuilt binary [3].
 
 Synopsis
 --------
@@ -53,4 +57,5 @@ Use the web app to examine the results:
 
 [1]: http://www.mozilla.com/en-US/mobile/
 [2]: http://caml.inria.fr/
+[3]: https://github.com/pcwalton/piranha
 
