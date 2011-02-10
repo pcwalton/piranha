@@ -1,22 +1,23 @@
 SOURCES=symbolicate.ml
-LIBS=extlib/extLib ocurl/curl unix
-INCDIRS=extlib ocurl
+LIBS=../deps/extlib/extLib ../deps/ocurl/curl unix
+INCDIRS=../deps/extlib ../deps/ocurl
 RESULT=piranha-symbolicate
 PRE_TARGETS=extlib.stamp ocurl.stamp
 
-include OCamlMakefile
+OCAMLMAKEFILE=../deps/OCamlMakefile
+include ../deps/OCamlMakefile
 
 .PHONY: extlib.stamp ocurl.stamp
 
 extlib.stamp:
-	$(MAKE) -C extlib
+	$(MAKE) -C ../deps/extlib
 
-ocurl.stamp:	ocurl/Makefile
-	$(MAKE) -C ocurl
+ocurl.stamp:	../deps/ocurl/Makefile
+	$(MAKE) -C ../deps/ocurl
 
-ocurl/Makefile:
-	cd ocurl && env -i ./configure
+../deps/ocurl/Makefile:
+	cd ../deps/ocurl && env -i ./configure
 
 clean::
-	$(MAKE) -C extlib clean && $(MAKE) -C ocurl clean
+	$(MAKE) -C ../deps/extlib clean && $(MAKE) -C ../deps/ocurl clean
 
