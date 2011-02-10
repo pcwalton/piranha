@@ -220,12 +220,8 @@ Model.prototype = {
                         break;
                     case this.EBML_STACK_TAG:
                         stack = [];
-                        //console.log("pos=", this._reader._pos);
-                        /*if (this._reader.size > 8)
-                            throw new Error("size is " + this._reader.size);*/
                         for (var i = 0; i < this._reader.size; i += 4) {
                             var addr = this._reader.readUInt32(i);
-                            //console.log("addr=", addr.toString(16));
                             stack.push(this._symbolicateAddress(addr));
                         }
                         break;
@@ -240,9 +236,6 @@ Model.prototype = {
                 }
 
                 // Add the data to the appropriate bottom-up call stack.
-                /*if (stack.length > 2)
-                    throw new Error("stack length " + stack.length);*/
-
                 var node = threads[threadPID].bottomUp;
                 for (var i = 0; i < stack.length; i++) {
                     var symbol = stack[i];
@@ -353,7 +346,6 @@ Model.prototype = {
             }
 
             var symbol = this._symbols[mid];
-            //console.log("symbol=", symbol);
             // TODO: include module name as well
             return symbol.name;
         }
@@ -377,6 +369,9 @@ function Controller() {
     });
 
     $('#threads').change(this._showCurrentThread.bind(this));
+
+    $('#bottom-up').dynatree({ children: [] });
+    $('#top-down').dynatree({ children: [] });
 }
 
 Controller.prototype = {
@@ -399,6 +394,7 @@ Controller.prototype = {
     _showCurrentThread: function() {
         var id = $('#threads > option:selected').attr('value');
         console.log("*** id=" + id);
+
         this._showTreeForThread(id, $('#bottom-up'), 'bottomUp');
         this._showTreeForThread(id, $('#top-down'), 'topDown');
     },
@@ -406,22 +402,39 @@ Controller.prototype = {
     _showTreeForThread: function(threadID, $element, property) {
         var totalSamples = this._model.totalSamples;
 
-        var html = [];
-        function process(node) {
-            html.push('<ul>');
-            var syms = Object.getOwnPropertyNames(node.c);
-            syms.sort(function(a, b) { return node.c[b].n - node.c[a].n });
-            syms.forEach(function(name) {
-                var percent = node.c[name].n / totalSamples * 100;
-                html.push('<li>(', percent.toPrecision(2), '%) ', name);
-                process(node.c[name]);
-                html.push('</li>');
+        // Use a worklist to avoid blowing the stack.
+        var tree = { children: [] };
+        var worklist = [
+            { model: this._model.threads[threadID][property], view: tree }
+        ];
+
+        while (worklist.length) {
+            var item = worklist.shift();
+
+            var syms = Object.getOwnPropertyNames(item.model.c);
+            if (!syms.length) {
+                item.isFolder = false;
+                continue;
+            }
+
+            syms.sort(function(a, b) {
+                return item.model.c[b].n - item.model.c[a].n
             });
-            html.push('</ul>');
+
+            syms.forEach(function(name) {
+                var percent = item.model.c[name].n / totalSamples * 100;
+                var child = {
+                    title: "(" + percent.toPrecision(2) + "%) " + name,
+                    children: []
+                };
+                worklist.push({ model: item.model.c[name], view: child });
+                item.view.children.push(child);
+            });
         }
 
-        process(this._model.threads[threadID][property]);
-        $element.html(html.join(''));
+        var root = $element.dynatree('getRoot');
+        root.removeChildren();
+        root.addChild(tree.children);
     }
 }
 

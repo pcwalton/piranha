@@ -297,9 +297,9 @@ bool peek(struct basic_info *binfo, uint32_t addr, uint32_t *out)
 {
     static int fast_paths = 0, slow_paths = 0;
 
-    if (addr == binfo->mem_offset) {
+    /*if (addr == binfo->mem_offset) {
         fast_paths++;
-    } else {
+    } else {*/
         // Slow path: reposition
         slow_paths++;
         if (lseek64(binfo->mem, addr, SEEK_SET) == -1) {
@@ -308,7 +308,7 @@ bool peek(struct basic_info *binfo, uint32_t addr, uint32_t *out)
             return false;
         }
         assert(lseek64(binfo->mem, 0, SEEK_CUR) == addr);
-    }
+    //}
 
     /*if ((fast_paths + slow_paths) % 10000 == 0)
         printf("fast: %d slow: %d\n", fast_paths, slow_paths);*/
@@ -346,6 +346,8 @@ bool unwind(struct basic_info *binfo, struct ebml_writer *writer, pid_t pid)
         return false;
 
     uint32_t lr = regs.ARM_lr & 0xfffffffe, sp = regs.ARM_sp;
+
+    assert(!(sp % 4));
 
 #ifdef DEBUG_STACK_WALKING
     printf(" /* sp: %08x */", sp);
@@ -553,11 +555,16 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
     if (!tasks_path)
         return false;
 
+    if (ptrace(PTRACE_ATTACH, binfo->pid, NULL, NULL))
+        return false;
+    if (!wait_for_process_to_stop(binfo->pid))
+        goto out;
+
     DIR *tasks_dir = opendir((char *)tasks_path->data);
     bdestroy(tasks_path);
     if (!tasks_dir) {
         perror("Failed to open /proc/x/task");
-        return false;
+        goto out;
     }
 
     struct dirent *ent;
@@ -575,13 +582,13 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
             break;
         }
 
-        if (ptrace(PTRACE_ATTACH, thread_pid, NULL, NULL))
-            continue;
-
-        if (binfo->pid == thread_pid)
-            wait_for_process_to_stop(thread_pid);
-        else if (!wait_for_thread_attachment(thread_pid))
-            continue;
+        // Attach to the thread if we need to.
+        if (binfo->pid != thread_pid) {
+            if (ptrace(PTRACE_ATTACH, thread_pid, NULL, NULL))
+                continue;
+            if (!wait_for_thread_attachment(thread_pid))
+                continue;
+        }
 
         if (!ebml_start_tag(writer, EBML_THREAD_SAMPLE_TAG)) {
             ok = false;
@@ -612,12 +619,17 @@ bool sample(struct basic_info *binfo, struct ebml_writer *writer)
         if (!unwind(binfo, writer, thread_pid))
             ok = false;
 
-        detach_from_thread((pid_t)thread_pid);
+        if (binfo->pid != thread_pid)
+            detach_from_thread((pid_t)thread_pid);
 
         ebml_end_tag(writer);
     }
 
     closedir(tasks_dir);
+
+out:
+    if (ptrace(PTRACE_DETACH, binfo->pid, NULL, NULL))
+        perror("Failed to detach from process");
     ebml_end_tag(writer);
     return ok;
 }
@@ -659,8 +671,8 @@ bool profile(struct basic_info *binfo, struct ebml_writer *writer)
     if (!ebml_start_tag(writer, EBML_SAMPLES_TAG))
         return false;
 
-    // We have neither signalfd() nor sigwaitinfo() on Android so we have to do
-    // this dumb thing with socketpair() to get a performant event model.
+    // We have neither signalfd() nor sigwaitinfo() on Android, so we have to
+    // do this dumb thing with socketpair() to get a performant event model.
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, signal_sockets)) {
         perror("socketpair() failed");
         return false;

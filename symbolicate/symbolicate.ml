@@ -293,22 +293,33 @@ let fetch_syslib_symbols cache_dir module_path =
     (* Remove the leading "system/". *)
     let relpath = ExtString.String.strip ~chars:"/" module_path in
     let _, relpath = ExtString.String.split relpath "/" in
-
     let dest_path = Filename.concat cache_dir relpath in
-    mkdir_p (Filename.dirname dest_path);
 
-    Printf.eprintf "Fetching system library '%s' from device..." module_path;
-    flush stderr;
+    begin
+        try
+            ignore(Unix.stat dest_path);
+            Printf.eprintf "Found cached system symbols for '%s'\n"
+                module_path;
+            flush stderr;
+            Some (dest_path, `ELF)
+        with _ ->
+            mkdir_p (Filename.dirname dest_path);
 
-    let cmdline = Printf.sprintf "adb pull %s %s" module_path dest_path in
-    if (Unix.system cmdline) = (Unix.WEXITED 0) then begin
-        prerr_endline "done.";
-        flush stderr;
-        Some (dest_path, `ELF)
-    end else begin
-        prerr_endline "failed.";
-        flush stderr;
-        None
+            Printf.eprintf "Fetching system library '%s' from device..."
+                module_path;
+            flush stderr;
+
+            let cmdline = Printf.sprintf "adb pull %s %s" module_path
+                dest_path in
+            if (Unix.system cmdline) = (Unix.WEXITED 0) then begin
+                prerr_endline "done.";
+                flush stderr;
+                Some (dest_path, `ELF)
+            end else begin
+                prerr_endline "failed.";
+                flush stderr;
+                None
+            end
     end
 
 let fetch_symbols caches symbol_urls mregion =
