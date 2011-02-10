@@ -25,6 +25,29 @@ type program_options = {
     po_application_ini: string option;
 }
 
+type caches = {
+    ca_fennec: string;
+    ca_syslibs: string;
+}
+
+(*
+ * General utilities
+ *)
+
+let mkdir_p path =
+    ignore begin
+        List.fold_left begin fun pathname component ->
+            let pathname = pathname ^ component ^ "/" in
+            begin
+                try Unix.mkdir pathname 0o775
+                with
+                | Unix.Unix_error(Unix.EEXIST, _, _)
+                | Unix.Unix_error(Unix.EISDIR, _, _) -> ()
+            end;
+            pathname
+        end "" (ExtString.String.nsplit path "/")
+    end
+
 let get_program_options() =
     let oparser =
         OptParse.OptParser.make
@@ -205,30 +228,33 @@ let get_modules f =
     done;
     DynArray.to_array regions
 
-let get_cache_dir binfo =
-    let path =
+let get_cache_dirs binfo =
+    let fennec_path =
         Printf.sprintf
-            "%s/.piranha/symbol-cache/%s-%s-%s"
+            "%s/.piranha/symbol-cache/fennec/%s-%s-%s"
             (Unix.getenv "HOME")
             binfo.bi_name
             binfo.bi_version
             binfo.bi_build_id in
-    (* mkdir -p *)
-    ignore begin
-        List.fold_left begin fun pathname component ->
-            let pathname = pathname ^ component ^ "/" in
-            begin
-                try Unix.mkdir pathname 0o775
-                with
-                | Unix.Unix_error(Unix.EEXIST, _, _)
-                | Unix.Unix_error(Unix.EISDIR, _, _) -> ()
-            end;
-            pathname
-        end "" (ExtString.String.nsplit path "/")
-    end;
-    path
+    mkdir_p fennec_path;
 
-let fetch_symbols cache_dir symbol_urls module_name =
+    let adb = Unix.open_process_in "adb get-serialno" in
+    let syslibs_path =
+        Std.finally (fun() -> ignore(Unix.close_process_in adb)) begin fun() ->
+            Printf.sprintf
+                "%s/.piranha/symbol-cache/syslibs/%s"
+                (Unix.getenv "HOME")
+                (input_line adb)
+        end () in
+    mkdir_p syslibs_path;
+
+    { ca_fennec = fennec_path; ca_syslibs = syslibs_path }
+
+(*
+ *  Symbol retrieval
+ *)
+
+let fetch_fennec_symbols cache_dir symbol_urls module_name =
     if Hashtbl.mem symbol_urls module_name then begin
         let path = Printf.sprintf "%s/%s.syms" cache_dir module_name in
         begin
@@ -256,57 +282,128 @@ let fetch_symbols cache_dir symbol_urls module_name =
                 prerr_endline "done.";
                 flush stderr
         end;
-        Some path
+        Some (path, `Mozilla)
     end else begin
         Printf.eprintf "No symbols found for '%s'\n" module_name;
         flush stderr;
         None
     end
 
-let write_symbols writer module_name symbols_path =
+let fetch_syslib_symbols cache_dir module_path =
+    (* Remove the leading "system/". *)
+    let relpath = ExtString.String.strip ~chars:"/" module_path in
+    let _, relpath = ExtString.String.split relpath "/" in
+
+    let dest_path = Filename.concat cache_dir relpath in
+    mkdir_p (Filename.dirname dest_path);
+
+    Printf.eprintf "Fetching system library '%s' from device..." module_path;
+    flush stderr;
+
+    let cmdline = Printf.sprintf "adb pull %s %s" module_path dest_path in
+    if (Unix.system cmdline) = (Unix.WEXITED 0) then begin
+        prerr_endline "done.";
+        flush stderr;
+        Some (dest_path, `ELF)
+    end else begin
+        prerr_endline "failed.";
+        flush stderr;
+        None
+    end
+
+let fetch_symbols caches symbol_urls mregion =
+    if ExtString.String.starts_with mregion.mr_path "/dev/ashmem" then
+        (* Fennec library. *)
+        fetch_fennec_symbols caches.ca_fennec symbol_urls mregion.mr_name
+    else if ExtString.String.starts_with mregion.mr_path "/system" then
+        (* Device standard library. *)
+        fetch_syslib_symbols caches.ca_syslibs mregion.mr_path
+    else begin
+        Printf.eprintf
+            "Don't know how to find symbols for '%s'\n"
+            mregion.mr_path;
+        None
+    end
+
+(*
+ *  Symbol writing
+ *)
+
+let write_mozilla_symbols writer symbols_path =
     let f = open_in symbols_path in
     Std.finally (fun() -> close_in f) begin fun() ->
         let io = IO.output_channel writer.EBML.wr_file in
-
-        (* Write the module header. *)
-        EBML.start_tag writer EBML.tag_module;
-        EBML.start_tag writer EBML.tag_module_name;
-        IO.write_string io module_name;
-        EBML.end_tag writer;
-
-        Printf.eprintf "Writing symbols for '%s'..." module_name; flush stderr;
-
         let i = ref 0 in
-        begin
-            try
-                while true do
-                    let line = input_line f in
-                    if ExtString.String.starts_with line "FUNC " then begin
-                        let fields = ExtString.String.nsplit line " " in
-                        let addr_str = List.nth fields 1 in
-                        let symbol = ExtList.List.last fields in
-                        let addr = int_of_string ("0x" ^ addr_str) in
-                        EBML.start_tag writer EBML.tag_symbol;
-                        IO.BigEndian.write_i32 io addr;
-                        IO.write_string io symbol;
-                        EBML.end_tag writer
-                    end;
-                    incr i;
-                    if !i mod 100000 = 0 then begin
-                        prerr_char '.';
-                        flush stderr
-                    end
-                done
-            with End_of_file -> ()
-        end;
-        prerr_endline "done."; flush stderr;
-
-        EBML.end_tag writer
+        try
+            while true do
+                let line = input_line f in
+                if ExtString.String.starts_with line "FUNC " then begin
+                    let fields = ExtString.String.nsplit line " " in
+                    let addr_str = List.nth fields 1 in
+                    let symbol = ExtList.List.last fields in
+                    let addr = int_of_string ("0x" ^ addr_str) in
+                    EBML.start_tag writer EBML.tag_symbol;
+                    IO.BigEndian.write_i32 io addr;
+                    IO.write_string io symbol;
+                    EBML.end_tag writer
+                end;
+                incr i;
+                if !i mod 100000 = 0 then begin
+                    prerr_char '.';
+                    flush stderr
+                end
+            done
+        with End_of_file -> ()
     end ()
 
+let write_elf_symbols writer symbols_path =
+    let cmd_line = Printf.sprintf "arm-eabi-nm -D %s" symbols_path in
+    let nm = Unix.open_process_in cmd_line in
+    Std.finally (fun() -> ignore(Unix.close_process_in nm)) begin fun() ->
+        let io = IO.output_channel writer.EBML.wr_file in
+        let i = ref 0 in
+        try
+            while true do
+                let line = input_line nm in
+                let fields = ExtString.String.nsplit line " " in
+                if ((List.length fields) >= 3) && ((List.nth fields 1) = "T")
+                        then begin
+                    EBML.start_tag writer EBML.tag_symbol;
+                    let addr = int_of_string ("0x" ^ (List.hd fields)) in
+                    IO.BigEndian.write_i32 io addr;
+                    IO.write_string io (List.nth fields 2);
+                    EBML.end_tag writer
+                end;
+                incr i;
+                if !i mod 100000 = 0 then begin
+                    prerr_char '.';
+                    flush stderr
+                end
+            done;
+        with End_of_file -> ()
+    end ()
+
+let write_symbols writer module_name (symbols_path, symbols_type) =
+    Printf.eprintf "Writing symbols for '%s'..." module_name; flush stderr;
+
+    (* Write the module header. *)
+    let io = IO.output_channel writer.EBML.wr_file in
+    EBML.start_tag writer EBML.tag_module;
+    EBML.start_tag writer EBML.tag_module_name;
+    IO.write_string io module_name;
+    EBML.end_tag writer;
+
+    begin
+        match symbols_type with
+        | `Mozilla -> write_mozilla_symbols writer symbols_path
+        | `ELF -> write_elf_symbols writer symbols_path
+    end;
+
+    EBML.end_tag writer;
+    prerr_endline "done."; flush stderr
+
 let fetch_and_write_symbols writer cache_dir symbol_urls mregion =
-    let symbols_path_opt =
-        fetch_symbols cache_dir symbol_urls mregion.mr_name in
+    let symbols_path_opt = fetch_symbols cache_dir symbol_urls mregion in
     Option.may (write_symbols writer mregion.mr_path) symbols_path_opt
 
 let main() =
@@ -338,10 +435,10 @@ let main() =
 
         (* Fetch the symbols we need. *)
         let binfo = get_build_info opts.po_application_ini in
-        let cache_dir = get_cache_dir binfo in
+        let caches = get_cache_dirs binfo in
         let symbol_urls = get_symbol_urls binfo in
         Hashtbl.iter
-            (fun _ v -> fetch_and_write_symbols writer cache_dir symbol_urls v)
+            (fun _ v -> fetch_and_write_symbols writer caches symbol_urls v)
             module_list;
 
         (* Finish up. *)
