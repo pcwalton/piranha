@@ -26,7 +26,7 @@ To build:
 
 Alternately, you can skip steps 1-3 with the prebuilt binary on GitHub. Click
 on the "Downloads" button in the top right corner of the project page and
-downlaod the prebuilt binary [3].
+download the prebuilt binary [3].
 
 Synopsis
 --------
