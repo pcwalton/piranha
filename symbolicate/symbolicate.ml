@@ -107,7 +107,7 @@ let get_symbol_urls build_info =
         app
         build_info.bi_version
         build_info.bi_build_id in
-    Printf.eprintf "Fetching %s..." url;
+    Printf.eprintf "Fetching '%s'..." url;
 
     let curl = Curl.init() in
     let response = Std.finally (fun() -> Curl.cleanup curl) begin fun() ->
@@ -117,6 +117,11 @@ let get_symbol_urls build_info =
         end;
         Curl.set_url curl url;
         Curl.perform curl;
+		if (Curl.get_responsecode curl) <> 200 then begin
+			failwith
+				(Printf.sprintf "Couldn't fetch '%s' (%d)" url
+					(Curl.get_responsecode curl))
+		end;
         Buffer.contents buf
     end () in
 

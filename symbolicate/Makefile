@@ -5,7 +5,7 @@ RESULT=piranha-symbolicate
 PRE_TARGETS=extlib.stamp ocurl.stamp
 
 OCAMLMAKEFILE=../deps/OCamlMakefile
-include ../deps/OCamlMakefile
+include $(OCAMLMAKEFILE)
 
 .PHONY: extlib.stamp ocurl.stamp
 
