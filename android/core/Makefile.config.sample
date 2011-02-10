@@ -1,0 +1,6 @@
+# Change this to point to your Android NDK.
+NDK=$(HOME)/Applications/android-ndk-r5b
+
+# Change this to your host, as the Android NDK defines it.
+HOST=darwin-x86
+

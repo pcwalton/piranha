@@ -9,9 +9,7 @@ source dependencies, unfortunately, but there's not a whole lot we can do here;
 Android's build system is gnarly. The OCaml dependencies 
 
 * The Android SDK, version 8 (version 5 will not work) with the `adb` utility.
-* The Android Open Source Project, version 8, built in a place where `agcc` can
-  find it.
-* The `agcc` script [1].
+* The Android NDK, release 5b or later.
 * Objective Caml [2].
 * `libcurl`. You probably already have this installed, if you're on Mac or
   Linux.
@@ -19,12 +17,13 @@ Android's build system is gnarly. The OCaml dependencies
 To build:
 
 1. `$ cd android/core`
-2. Edit the `Makefile` to point to your `agcc` location.
-3. `$ make`
-4. `$ cd ../symbolicate`
-5. `$ make`
+2. `$ cp Makefile.config.sample Makefile.config`
+3. Edit `Makefile.config` and set the paths in it appropriately.
+4. `$ make`
+5. `$ cd ../../symbolicate`
+6. `$ make`
 
-Alternately, you can skip steps 1-3 with the prebuilt binary on GitHub. Click
+Alternately, you can skip steps 1-4 with the prebuilt binary on GitHub. Click
 on the "Downloads" button in the top right corner of the project page and
 download the prebuilt binary [3].
 
