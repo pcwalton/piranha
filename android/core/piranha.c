@@ -281,10 +281,8 @@ bool guess_lr_legitimacy(pid_t pid, uint32_t maybe_lr, uint32_t *real_lr)
         return false;
 
     // Does it immediately follow a "bl" or "blx" instruction?
-    if ((maybe_bl_lower & 0xf000) == 0xf000 ||          // bl label
-            (maybe_bl_lower & 0xff87) == 0x4700 ||      // bx Rm
+    if ((maybe_bl_lower & 0xff07) == 0x4700 ||      // b(l)x Rm
             (maybe_bl_lower & 0xf801) == 0xe800 ||      // blx label
-            (maybe_bl_lower & 0xff87) == 0x4780 ||      // blx Rm
             ((maybe_bl_upper & 0xf800) == 0xf000 &&
              (maybe_bl_lower & 0xd000) == 0xd000)) {    // bl
         // Found!
