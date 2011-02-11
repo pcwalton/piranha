@@ -347,10 +347,6 @@ Model.prototype = {
 
             var symbol = this._symbols[mid];
             // TODO: include module name as well
-
-			if (symbol.name == "main")
-				return "(was main) " + addr.toString(16);
-
             return symbol.name;
         }
 
