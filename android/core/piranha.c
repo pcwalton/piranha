@@ -47,6 +47,10 @@
 #define EBML_SYMBOL_TAG         0x8b          // contained by MODULE
 #define EBML_THREAD_PID_TAG     0x8c          // contained by THREAD_SAMPLE
 
+#define PENDING_SIGNAL_NONE     0
+#define PENDING_SIGNAL_TICK     1
+#define PENDING_SIGNAL_STOP     2
+
 #define length_of(x)    (sizeof(x) / sizeof((x)[0]))
 
 struct map {
@@ -69,6 +73,8 @@ struct ebml_writer {
     uint32_t tag_offsets[4];
     int tag_stack_size;
 };
+
+volatile int pending_signal = PENDING_SIGNAL_NONE;
 
 //
 // EBML writing
@@ -179,8 +185,15 @@ void signal_handler(int which)
         sigint_handled = true;
     }
 
-    int8_t sig = which;
-    write(signal_sockets[1], &sig, sizeof(sig));
+    if (pending_signal == PENDING_SIGNAL_NONE) {
+        uint8_t b = 0;
+        write(signal_sockets[1], &b, sizeof(b));
+    }
+
+    if (which == SIGINT)
+        pending_signal = PENDING_SIGNAL_STOP;
+    else if (pending_signal < PENDING_SIGNAL_STOP)
+        pending_signal = PENDING_SIGNAL_TICK;
 }
 
 int compare_addr_and_map(const void *addr_p, const void *map_p)
@@ -466,7 +479,6 @@ bool read_maps(pid_t pid, bstring *maps)
         }
     }
 
-out:
     fclose(f);
     return ok;
 }
@@ -713,14 +725,17 @@ bool profile(struct basic_info *binfo, struct ebml_writer *writer)
         goto out;
     }
 
-    int8_t sig;
-    while (read(signal_sockets[0], &sig, sizeof(sig))) {
+    uint8_t b;
+    while (read(signal_sockets[0], &b, sizeof(b))) {
+        int sig = pending_signal;
+        pending_signal = PENDING_SIGNAL_NONE;
+
         switch (sig) {
-        case SIGALRM:
+        case PENDING_SIGNAL_TICK:
             if (!(ok = sample(binfo, writer)))
                 goto out;
             break;
-        case SIGINT:
+        case PENDING_SIGNAL_STOP:
             goto out;
         }
     }
