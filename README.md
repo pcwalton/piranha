@@ -22,9 +22,10 @@ To build:
 6. `$ make -C android/driver`
 7. `$ make -C symbolicate`
 
-Alternately, you can skip steps 1-4 with the prebuilt binary on GitHub. Click
+Alternately, you can skip steps 1-5 with the prebuilt binary on GitHub. Click
 on the "Downloads" button in the top right corner of the project page and
-download the prebuilt binary [3].
+download the prebuilt binary [3]. Be warned that the prebuilt binary might be
+out of date; if you have trouble, try building from source.
 
 Synopsis
 --------
