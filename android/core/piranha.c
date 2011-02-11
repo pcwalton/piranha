@@ -744,17 +744,36 @@ bool open_memory(struct basic_info *binfo)
     return ok;
 }
 
+void usage()
+{
+    fprintf(stderr, "usage: piranha [-o FILE] PID\n");
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
+    char *out_path = "profile.ebml";
+    int ch;
+    while ((ch = getopt(argc, argv, "o:")) != -1) {
+        switch (ch) {
+        case 'o':
+            out_path = optarg;
+            break;
+        default:
+            usage();
+            break;
+        }
+    }
+
+    if (argc - optind != 1) {
         fprintf(stderr, "usage: piranha PID\n");
         return 1;
     }
 
     struct ebml_writer ebml_writer;
     memset(&ebml_writer, '\0', sizeof(ebml_writer));
-    if (!(ebml_writer.f = fopen("profile.ebml", "wb"))) {
-        perror("Couldn't open \"profile.ebml\"");
+    if (!(ebml_writer.f = fopen(out_path, "wb"))) {
+        perror("Couldn't open the output file");
         return 1;
     }
 
@@ -768,7 +787,7 @@ int main(int argc, char **argv)
     // Initialize the basic info structure
     struct basic_info binfo;
     memset(&binfo, '\0', sizeof(binfo));
-    binfo.pid = strtol(argv[1], NULL, 0);
+    binfo.pid = strtol(argv[optind], NULL, 0);
     if (!compute_thread_entry(&binfo)) {
         ok = false;
         goto out;
