@@ -23,11 +23,18 @@ type program_options = {
     po_input_path: string;
     po_output_path: string;
     po_application_ini: string option;
+    po_binary_path: string option;
 }
 
 type caches = {
     ca_fennec: string;
     ca_syslibs: string;
+}
+
+type symbol_sources = {
+    ss_cache_dirs: caches;
+    ss_symbol_urls: (string, string) Hashtbl.t;
+    ss_binary_path: string option;
 }
 
 (*
@@ -56,12 +63,20 @@ let get_program_options() =
             () in
     let application_ini = OptParse.Opt.value_option "PATH" None
         Std.identity (fun e s -> s) in
+    let binary_path = OptParse.Opt.value_option "PATH" None Std.identity
+        (fun e s -> s) in
     OptParse.OptParser.add
         oparser
         ~help:"application.ini file for Fennec"
         ~short_name:'a'
         ~long_name:"application-ini"
         application_ini;
+    OptParse.OptParser.add
+        oparser
+        ~help:"path to local files containing symbol-rich binaries"
+        ~short_name:'b'
+        ~long_name:"binary-path"
+        binary_path;
     let remaining_args = OptParse.OptParser.parse_argv oparser in
     if List.length remaining_args <> 2 then begin
         OptParse.OptParser.usage oparser ();
@@ -71,6 +86,7 @@ let get_program_options() =
         po_input_path = List.hd remaining_args;
         po_output_path = List.nth remaining_args 1;
         po_application_ini = OptParse.Opt.opt application_ini;
+        po_binary_path = OptParse.Opt.opt binary_path;
     }
 
 let get_build_info application_ini =
@@ -327,19 +343,31 @@ let fetch_syslib_symbols cache_dir module_path =
             end
     end
 
-let fetch_symbols caches symbol_urls mregion =
-    if ExtString.String.starts_with mregion.mr_path "/dev/ashmem" then
-        (* Fennec library. *)
-        fetch_fennec_symbols caches.ca_fennec symbol_urls mregion.mr_name
-    else if ExtString.String.starts_with mregion.mr_path "/system" then
-        (* Device standard library. *)
-        fetch_syslib_symbols caches.ca_syslibs mregion.mr_path
-    else begin
-        Printf.eprintf
-            "Don't know how to find symbols for '%s'\n"
-            mregion.mr_path;
-        None
-    end
+let fetch_symbols sources mregion =
+    try
+        (* Check the user's binary path first. *)
+        match sources.ss_binary_path with
+        | None -> raise Exit
+        | Some path ->
+            let path = Filename.concat path mregion.mr_name in
+            Printf.eprintf "Looking for %s\n" path;
+            ignore(Unix.stat path);
+            Some (path, `ELF)
+    with _ ->
+        if ExtString.String.starts_with mregion.mr_path "/dev/ashmem" then
+            (* Fennec library. *)
+            fetch_fennec_symbols sources.ss_cache_dirs.ca_fennec
+                sources.ss_symbol_urls mregion.mr_name
+        else if ExtString.String.starts_with mregion.mr_path "/system" then
+            (* Device standard library. *)
+            fetch_syslib_symbols sources.ss_cache_dirs.ca_syslibs
+                mregion.mr_path
+        else begin
+            Printf.eprintf
+                "Don't know how to find symbols for '%s'\n"
+                mregion.mr_path;
+            None
+        end
 
 (*
  *  Symbol writing
@@ -372,8 +400,12 @@ let write_mozilla_symbols writer symbols_path =
         with End_of_file -> ()
     end ()
 
-let write_elf_symbols writer symbols_path =
-    let cmd_line = Printf.sprintf "arm-eabi-nm -D %s" symbols_path in
+let write_elf_symbols writer symbols_path dynamic =
+    let cmd_line =
+        Printf.sprintf
+            "arm-eabi-nm%s -C %s"
+            (if dynamic then " -D" else "")
+            symbols_path in
     let nm = Unix.open_process_in cmd_line in
     Std.finally (fun() -> ignore(Unix.close_process_in nm)) begin fun() ->
         let io = IO.output_channel writer.EBML.wr_file in
@@ -382,8 +414,8 @@ let write_elf_symbols writer symbols_path =
             while true do
                 let line = input_line nm in
                 let fields = ExtString.String.nsplit line " " in
-                if ((List.length fields) >= 3) && ((List.nth fields 1) = "T")
-                        then begin
+                if ((List.length fields) >= 3) &&
+                        (String.lowercase (List.nth fields 1)) = "t" then begin
                     EBML.start_tag writer EBML.tag_symbol;
                     let addr = int_of_string ("0x" ^ (List.hd fields)) in
                     IO.BigEndian.write_i32 io addr;
@@ -412,14 +444,16 @@ let write_symbols writer module_name (symbols_path, symbols_type) =
     begin
         match symbols_type with
         | `Mozilla -> write_mozilla_symbols writer symbols_path
-        | `ELF -> write_elf_symbols writer symbols_path
+        | `ELF ->
+            write_elf_symbols writer symbols_path true;
+            write_elf_symbols writer symbols_path false
     end;
 
     EBML.end_tag writer;
     prerr_endline "done."; flush stderr
 
-let fetch_and_write_symbols writer cache_dir symbol_urls mregion =
-    let symbols_path_opt = fetch_symbols cache_dir symbol_urls mregion in
+let fetch_and_write_symbols writer (sources:symbol_sources) mregion =
+    let symbols_path_opt = fetch_symbols sources mregion in
     Option.may (write_symbols writer mregion.mr_path) symbols_path_opt
 
 let main() =
@@ -451,10 +485,13 @@ let main() =
 
         (* Fetch the symbols we need. *)
         let binfo = get_build_info opts.po_application_ini in
-        let caches = get_cache_dirs binfo in
-        let symbol_urls = get_symbol_urls binfo in
+        let sources = {
+            ss_cache_dirs = get_cache_dirs binfo;
+            ss_symbol_urls = get_symbol_urls binfo;
+            ss_binary_path = opts.po_binary_path
+        } in
         Hashtbl.iter
-            (fun _ v -> fetch_and_write_symbols writer caches symbol_urls v)
+            (fun _ v -> fetch_and_write_symbols writer sources v)
             module_list;
 
         (* Finish up. *)
