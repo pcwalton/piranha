@@ -2,3 +2,62 @@ body {
 	font: 12px "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
+#main-ui[disabled="disabled"] {
+    filter: url(index.html#blur);
+}
+
+#close {
+    background: url(images/close.png);
+    width: 16px;
+    height: 16px;
+    border: none;
+}
+
+#close:hover {
+    background-position: -16px 0;
+}
+
+#close:active {
+    background-position: -32px 0;
+}
+
+/* Message box */
+
+#message-backdrop:not([disabled="disabled"]) {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+#message-box {
+    background-color: white;
+    position: absolute;
+    left: 30%;
+    top: -moz-calc(50% - 36px);
+    right: 30%;
+    height: 72px;
+    padding: 12px;
+    border-radius: 6px;
+    box-shadow: 0 3px 12px 3px rgba(0, 0, 0, 0.25);
+    text-align: center;
+    -moz-user-select: none;
+    cursor: default;
+    opacity: 1;
+    -moz-transform: scale(1.0);
+    -moz-transition: opacity 300ms ease-out, -moz-transform 300ms ease-out;
+}
+
+#message-box[disabled="disabled"] {
+    opacity: 0;
+    -moz-transform: scale(0.7);
+}
+
+#message-title {
+    margin: 0 0 14px;
+    letter-spacing: -1px;
+    font-size: 20px;
+}
+

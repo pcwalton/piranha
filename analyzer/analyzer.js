@@ -369,15 +369,29 @@ function Controller() {
     });
 
     $('#threads').change(this._showCurrentThread.bind(this));
+    $('#close').click(this._closeFile.bind(this));
 
     $('#bottom-up').dynatree({ children: [] });
     $('#top-down').dynatree({ children: [] });
 }
 
 Controller.prototype = {
+    _closeFile: function() {
+        $('#message-backdrop').removeAttr('disabled');
+        $('#main-ui').attr('disabled', 'disabled');
+        $('#message-box').removeAttr('disabled');
+    },
+
     _fileLoaded: function(ev) {
         this._model = new Model(Base64.decode(ev.target.result));
         this._populateThreadSelector();
+        this._hideMessageBox();
+    },
+
+    _hideMessageBox: function(ev) {
+        $('#message-backdrop').attr('disabled', 'disabled');
+        $('#main-ui').removeAttr('disabled');
+        $('#message-box').attr('disabled', 'disabled');
     },
 
     _populateThreadSelector: function() {

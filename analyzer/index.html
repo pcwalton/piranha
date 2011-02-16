@@ -1,19 +1,27 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>piranha analyzer</title>
+    <title>piranha</title>
 	<link rel=stylesheet href=analyzer.css>
 	<link rel=stylesheet href=dynatree-skin/ui.dynatree.css>
 </head>
 <body>
-    <input type=file id=uploader>
-    <div>
-        Thread: <select id=threads></select>
+    <div id=main-ui disabled=disabled>
+        <div>Thread: <select id=threads></select></div>
+        <button id=close></button>
+        <h2>Heavy (bottom-up)</h2>
+        <ul id=bottom-up></ul>
+        <h2>Top-down</h2>
+        <ul id=top-down></ul>
     </div>
-    <h2>Heavy (bottom-up)</h2>
-    <ul id=bottom-up></ul>
-    <h2>Top-down</h2>
-    <ul id=top-down></ul>
+    <div id=message-backdrop></div>
+    <div id=message-box>
+        <h2 id=message-title>Welcome to <code>piranha</code>.</h2>
+        <div>Select a profile: <input type=file id=uploader></div>
+    </div>
+    <svg>
+        <filter id=blur><feGaussianBlur stdDeviation=3></filter>
+    </svg>
     <script type=text/javascript src=jquery.min.js></script>
 	<script type=text/javascript src=jquery-ui.custom.min.js></script>
 	<script type=text/javascript src=jquery.cookie.js></script>
