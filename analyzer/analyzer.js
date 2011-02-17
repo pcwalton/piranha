@@ -2,6 +2,10 @@
  * piranha-analyzer
  */
 
+// The maximum function size in bytes. Anything above this and we assume there
+// is no symbol information for the function.
+const MAX_FUNCTION_SIZE = 1024;
+
 var Base64 = {
     CSET: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
 
@@ -346,6 +350,8 @@ Model.prototype = {
             }
 
             var symbol = this._symbols[mid];
+            if (addr >= symbol.addr + MAX_FUNCTION_SIZE)
+                break;
             // TODO: include module name as well
             return symbol.name;
         }
