@@ -7,13 +7,51 @@
 </head>
 <body>
     <div id=main-ui disabled=disabled>
-        <div>Thread: <select id=threads></select></div>
-        <button id=close></button>
-        <h2>Heavy (bottom-up)</h2>
-        <ul id=bottom-up></ul>
-        <h2>Top-down</h2>
-        <ul id=top-down></ul>
+        <div id=top-strip>
+            <button id=close></button>
+            <h2 id=option-heavy class=top-option selected=selected>
+                <div class="option-middle">Heavy (Bottom-Up)</div>
+            </h2>
+            <h2 id=option-tree class=top-option>
+                <div class="option-middle">Tree (Top-Down)</div>
+            </h2>
+        </div>
+        <div id=toolbar>
+            <div class=toolbar-item>Thread: <select id=threads></select></div>
+        </div>
+        <ul id=list></ul>
     </div>
+    <div class=option-side id=selected-option-left-side>
+        <svg height=26 width=16>
+            <linearGradient id=g x1=0% y1=0% x2=0% y2=100%>
+                <stop stop-color="#f0f0f0" offset=0%></stop>
+                <stop stop-color="#e0e0e0" offset=100%></stop>
+            </linearGradient>
+            <path d="M0,24 C8,24 5,0 16,0 L16,24 z"
+                style="fill: url(#g);"/>
+            <path d="M0,24 C8,24 5,0 16,0"
+                style="stroke: #f9f9f9; fill: none;"
+                transform="translate(0 2.0)"/>
+            <path d="M0,24 C8,24 5,0 16,0"
+                style="stroke: #999; fill: none;"/>
+        </svg>
+    </div>
+    <div class="option-side option-right-side"
+        id=selected-option-right-side></div>
+    <div class=option-side id=unselected-option-left-side>
+        <svg height=26 width=16>
+            <linearGradient id=g2 x1=0% y1=0% x2=0% y2=100%>
+                <stop stop-color="#dcdcdc" offset=0%></stop>
+                <stop stop-color="#d0d0d0" offset=100%></stop>
+            </linearGradient>
+            <path d="M0,24 C8,24 5,0 16,0 L16,24 z"
+                style="fill: url(#g2);"/>
+            <path d="M0,24 C8,24 5,0 16,0"
+                style="stroke: #999; fill: none;"/>
+        </svg>
+    </div>
+    <div class="option-side option-right-side"
+        id=unselected-option-right-side></div>
     <div id=message-backdrop></div>
     <div id=message-box>
         <h2 id=message-title>Welcome to <code>piranha</code>.</h2>

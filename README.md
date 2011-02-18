@@ -47,6 +47,11 @@ Use the web app to examine the results:
    the moment).
 2. Click the file chooser, and open your `profile-syms.ebml` file.
 
+Thanks
+------
+
+* The Chromium project for the tab strip design.
+
 [1]: http://www.mozilla.com/en-US/mobile/
 [2]: http://caml.inria.fr/
 [3]: https://github.com/pcwalton/piranha

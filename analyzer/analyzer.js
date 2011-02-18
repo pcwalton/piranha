@@ -234,13 +234,13 @@ Model.prototype = {
 
                 if (!(threadPID in threads)) {
                     threads[threadPID] = {
-                        bottomUp: { c: {} },
-                        topDown: { c: {} }
+                        heavy: { c: {} },
+                        tree: { c: {} }
                     };
                 }
 
                 // Add the data to the appropriate bottom-up call stack.
-                var node = threads[threadPID].bottomUp;
+                var node = threads[threadPID].heavy;
                 for (var i = 0; i < stack.length; i++) {
                     var symbol = stack[i];
                     if (!(symbol in node.c))
@@ -250,7 +250,7 @@ Model.prototype = {
                 }
 
                 // And to the appropriate top-down call stack.
-                node = threads[threadPID].topDown;
+                node = threads[threadPID].tree;
                 for (var i = stack.length - 1; i >= 0; i--) {
                     var symbol = stack[i];
                     if (!(symbol in node.c))
@@ -376,9 +376,12 @@ function Controller() {
 
     $('#threads').change(this._showCurrentThread.bind(this));
     $('#close').click(this._closeFile.bind(this));
+    $('#option-heavy').click(this._switchView.bind(this, 'heavy'));
+    $('#option-tree').click(this._switchView.bind(this, 'tree'));
 
-    $('#bottom-up').dynatree({ children: [] });
-    $('#top-down').dynatree({ children: [] });
+    $('#list').dynatree({ children: [] });
+
+    this._currentView = 'heavy';
 }
 
 Controller.prototype = {
@@ -411,15 +414,10 @@ Controller.prototype = {
         this._showCurrentThread();
     },
 
-    _showCurrentThread: function() {
-        var id = $('#threads > option:selected').attr('value');
-        console.log("*** id=" + id);
+    _refreshTree: function() {
+        var threadID = this._currentThread;
+        var property = this._currentView;
 
-        this._showTreeForThread(id, $('#bottom-up'), 'bottomUp');
-        this._showTreeForThread(id, $('#top-down'), 'topDown');
-    },
-
-    _showTreeForThread: function(threadID, $element, property) {
         var totalSamples = this._model.totalSamples;
 
         // Use a worklist to avoid blowing the stack.
@@ -452,9 +450,25 @@ Controller.prototype = {
             });
         }
 
-        var root = $element.dynatree('getRoot');
+        var root = $('#list').dynatree('getRoot');
         root.removeChildren();
         root.addChild(tree.children);
+    },
+
+    _showCurrentThread: function() {
+        this._currentThread = $('#threads > option:selected').attr('value');
+        this._refreshTree();
+    },
+
+    _switchView: function(view) {
+        if (this._currentView === view)
+            return;
+
+        $("#option-" + this._currentView).removeAttr('selected');
+        $("#option-" + view).attr('selected', 'selected');
+        this._currentView = view;
+
+        this._refreshTree();
     }
 }
 
