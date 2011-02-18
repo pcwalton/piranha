@@ -187,10 +187,6 @@ Model.prototype = {
                 offset: this._reader.readUInt32(8)
             };
 
-            console.log("map:" + name + ":" + maps[name].start.toString(16) +
-                "-" + maps[name].end.toString(16) +
-                " @ " + maps[name].offset.toString(16));
-
             this._reader.moveToNextSibling();
         }
 
@@ -263,15 +259,12 @@ Model.prototype = {
             totalSamples++;
         }, this);
 
-        console.log("Read " + totalSamples + " samples\n");
-
         return { threads: threads, totalSamples: totalSamples };
     },
 
     _loadSymbols: function() {
         this._reader.reset();
         while (this._reader.tag !== this.EBML_SYMBOLS_TAG) {
-            console.log("tag:" + this._reader.tag.toString(16));
             this._reader.moveToNextSibling();
         }
 
@@ -316,17 +309,6 @@ Model.prototype = {
         }, this);
 
         symbols.sort(function(a, b) { return a.addr - b.addr; });
-
-        console.log("sym:", symbols[0], symbols[0].addr.toString(16),
-            symbols[symbols.length-1],
-            symbols[symbols.length-1].addr.toString(16),
-            symbols.length);
-
-        /*document.write(symbols.map(function(s) {
-                return "<div>" + s.name + " : " + s.module + " @ " +
-                    s.addr.toString(16) + "</div>";
-            }).join(""));*/
-
         return symbols;
     },
 
